@@ -11,7 +11,7 @@ import pandas as pd
 import pydeck as pdk
 
 #BASE_URL = "http://host.docker.internal:8000/api/v1"
-BASE_URL = os.getenv("API_URL")
+BASE_URL = os.getenv("BASE_URL")
 
 st.set_page_config(
     page_title="Toroto Geospatial Explorer",
