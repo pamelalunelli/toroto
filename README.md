@@ -1,23 +1,40 @@
-# Geospatial Interventions API
+# Toroto Geospatial Explorer
 
-REST API for storing and querying geospatial interventions, built with **FastAPI + PostgreSQL/PostGIS**.
+REST API for storing and querying geospatial interventions, built with **FastAPI + PostgreSQL/PostGIS**, with an interactive Streamlit dashboard and an AI-powered natural language query layer.
 
-## Live Components
+## Live
 
-- API Docs: http://localhost:8000/docs
-- Map Demo: http://localhost:8501
+- **API + Swagger docs**: https://toroto-api.onrender.com/docs
+- **Interactive dashboard**: https://toroto-streamlit.onrender.com
+- **Source code**: https://github.com/pamelalunelli/toroto
 
-Run:
+> The system is deployed on Render free tier and may take ~30 seconds to respond after inactivity.
+
+---
+
+## Run locally
+
+```bash
 docker-compose up --build
-
-# API docs (Swagger UI)
-open http://localhost:8000/docs
 ```
 
-Data loads automatically on startup. The API is ready when you see:
+- API + Swagger: http://localhost:8000/docs
+- Dashboard: http://localhost:8501
+
+Data loads automatically on startup:
 ```
 ✅ Loaded 130 interventions and 3 areas into PostGIS
 ```
+
+### Environment variables
+
+```bash
+DATABASE_URL=postgresql://toroto:toroto@db:5432/geospatial
+BASE_URL=http://api:8000/api/v1
+GROQ_API_KEY=your_key_here   # required for AI Query Layer
+```
+
+Copy `.env.example` to `.env` and fill in `GROQ_API_KEY`.
 
 ---
 
@@ -25,33 +42,30 @@ Data loads automatically on startup. The API is ready when you see:
 
 ```
 ┌─────────────┐     HTTP       ┌──────────────────────────────────────┐
-│   Client    │ ────────────►  │  FastAPI                             │
+│  Streamlit  │ ────────────►  │  FastAPI                             │
 └─────────────┘                │                                      │
-                               │  routes.py   (HTTP layer)            │
+                               │  routes.py      (HTTP layer)         │
                                │      │                               │
                                │  repository.py  (spatial queries)    │
                                │      │                               │
-                               │  database.py  (connection/sessions)  │
+                               │  database.py    (connections/init)   │
                                └──────────────┬───────────────────────┘
-                                              │ SQLAlchemy
+                                              │ SQLAlchemy + GeoAlchemy2
                                ┌──────────────▼───────────────────────┐
                                │  PostgreSQL + PostGIS                │
-                               │                                      │
-                               │  interventions  (POINT geometry)     │
-                               │  areas          (POLYGON geometry)   │
+                               │  interventions  (POINT, 4326)        │
+                               │  areas          (POLYGON, 4326)      │
                                └──────────────────────────────────────┘
 ```
 
-**Separation of concerns:**
 | Layer | Responsibility |
 |-------|---------------|
 | `routes.py` | HTTP parsing, validation, response shaping |
-| `repository.py` | All SQL and spatial query logic |
-| `database.py` | Connection management, table/index creation |
-| `models.py` | SQLAlchemy ORM table definitions |
+| `repository.py` | All SQL and PostGIS spatial query logic |
+| `database.py` | Connection management, table and index creation |
+| `models.py` | SQLAlchemy + GeoAlchemy2 table definitions |
 | `schemas.py` | Pydantic input/output contracts |
-
-This means the spatial logic can be tested independently of HTTP, and the storage engine can be swapped without touching routes.
+| `ai_query.py` | Natural language → intent JSON → repository function |
 
 ---
 
@@ -59,37 +73,33 @@ This means the spatial logic can be tested independently of HTTP, and the storag
 
 ```sql
 interventions
-├── id                TEXT PRIMARY KEY
-├── subtype           TEXT              -- gavion, reforestacion, etc.
-├── status            TEXT              -- in_progress, validated, etc.
-├── project_id        TEXT
-├── region            TEXT
-├── geom              geometry(POINT, 4326)   ← PostGIS, GIST indexed
-├── date              TEXT
-├── intervention_timestamp  TIMESTAMPTZ
-├── operator_id       TEXT
-├── priority          TEXT
-├── quality_score     FLOAT
-├── extra_metadata    JSONB
-└── metrics           JSONB             -- flexible per-subtype metrics
+├── id                     TEXT PRIMARY KEY
+├── subtype                TEXT              -- gavion, reforestacion, etc.
+├── status                 TEXT              -- in_progress, validated, etc.
+├── project_id             TEXT
+├── region                 TEXT
+├── geom                   geometry(POINT, 4326)   ← GIST indexed
+├── date                   TEXT
+├── intervention_timestamp TIMESTAMPTZ
+├── operator_id            TEXT
+├── priority               TEXT
+├── quality_score          FLOAT
+├── extra_metadata         JSONB
+└── metrics                JSONB             -- flexible per-subtype metrics
 
 areas
-├── area_id           TEXT PRIMARY KEY
-├── name              TEXT
-└── geom              geometry(POLYGON, 4326)  ← PostGIS, GIST indexed
+├── area_id  TEXT PRIMARY KEY
+├── name     TEXT
+└── geom     geometry(POLYGON, 4326)         ← GIST indexed
 ```
 
-**Why JSONB for metrics?** Different intervention subtypes have different metrics
-(e.g., `area_m2` for gavion, `trees_planted` for reforestacion). A flexible JSONB
-column avoids a wide sparse table or a complex EAV pattern.
+**JSONB for metrics** — different subtypes have different metrics (`area_m2` for gavion, `trees_planted` for reforestacion). JSONB avoids a sparse table or EAV pattern while keeping flexibility.
 
-**Why SRID 4326?** The input data is in WGS84 lat/lon, which is the universal standard
-for GPS coordinates. All distance calculations cast to `geography` type to get accurate
-geodesic distances in meters — not distorted planar degrees.
+**SRID 4326 + geography cast** — all distance calculations cast to `geography` for accurate geodesic distances in meters on the WGS84 ellipsoid, avoiding planar distortion in degrees.
 
 ---
 
-## Spatial Queries Explained
+## Spatial Queries
 
 ### 1. Nearest Neighbor — `GET /api/v1/interventions/nearest`
 
@@ -100,14 +110,10 @@ ORDER BY geom <-> ST_SetSRID(ST_MakePoint(:lon, :lat), 4326)
 LIMIT 1
 ```
 
-The `<->` operator is PostGIS's **KNN (K-Nearest Neighbor)** operator. It uses the
-GIST index to find the closest geometry without scanning every row — O(log n) instead
-of O(n). The `::geography` cast in `ST_Distance` computes the exact geodesic distance
-in meters on the WGS84 ellipsoid.
+The `<->` KNN operator uses the GIST index directly — O(log n), no full table scan.
 
-**Example:**
-```
-GET /api/v1/interventions/nearest?lat=20.701&lon=-103.321
+```bash
+curl "https://toroto-api.onrender.com/api/v1/interventions/nearest?lat=20.701&lon=-103.321"
 ```
 
 ---
@@ -117,22 +123,15 @@ GET /api/v1/interventions/nearest?lat=20.701&lon=-103.321
 ```sql
 SELECT *, ST_Distance(geom::geography, ref::geography) AS distance_m
 FROM interventions
-WHERE ST_DWithin(
-    geom::geography,
-    ST_SetSRID(ST_MakePoint(:lon, :lat), 4326)::geography,
-    :radius_m   -- in meters
-)
+WHERE ST_DWithin(geom::geography, ref::geography, :radius_m)
 ORDER BY distance_m
 ```
 
-`ST_DWithin` with `::geography` cast checks **true geodesic distance** — critical near
-the poles or at large scales where planar approximation breaks down. The GIST index
-provides a fast bounding-box pre-filter before the exact distance check.
+`ST_DWithin` with `::geography` computes true geodesic distance. GIST provides a bounding-box pre-filter before the exact check.
 
-**Example:**
-```
-GET /api/v1/interventions/within-radius?lat=20.700&lon=-103.320&radius_km=5
-GET /api/v1/interventions/within-radius?lat=20.700&lon=-103.320&radius_km=5&start_date=2026-03-01&end_date=2026-03-31
+```bash
+curl "https://toroto-api.onrender.com/api/v1/interventions/within-radius?lat=20.700&lon=-103.320&radius_km=5"
+curl "https://toroto-api.onrender.com/api/v1/interventions/within-radius?lat=20.700&lon=-103.320&radius_km=5&start_date=2026-03-01&end_date=2026-03-31"
 ```
 
 ---
@@ -146,14 +145,11 @@ JOIN areas a ON ST_Within(i.geom, a.geom)
 WHERE a.area_id = :area_id
 ```
 
-`ST_Within(point, polygon)` implements the **DE-9IM** spatial predicate — it returns
-true only if the point is entirely inside the polygon boundary. PostGIS uses GIST indexes
-on both geometries: a bounding-box intersection check first, then the exact topological test.
+`ST_Within` implements the DE-9IM spatial predicate. GIST indexes on both geometries: bounding-box pre-filter + exact topological test.
 
-**Example:**
-```
-GET /api/v1/interventions/within-area/zone_a
-GET /api/v1/interventions/within-area/zone_c?status=validated
+```bash
+curl "https://toroto-api.onrender.com/api/v1/interventions/within-area/zone_a"
+curl "https://toroto-api.onrender.com/api/v1/interventions/within-area/zone_c?status=validated"
 ```
 
 ---
@@ -165,29 +161,31 @@ GET /api/v1/interventions/within-area/zone_c?status=validated
 | GET | `/api/v1/interventions/nearest` | Nearest neighbor |
 | GET | `/api/v1/interventions/within-radius` | Within radius (km) |
 | GET | `/api/v1/interventions/within-area/{area_id}` | Within polygon |
+| GET | `/api/v1/interventions` | List with filters |
 | GET | `/api/v1/areas` | List reference polygons |
 | GET | `/api/v1/status-summary` | Count by status |
 | GET | `/api/v1/subtype-by-region` | Count by region + subtype |
+| GET | `/api/v1/analytics/by-region` | Analytics by region |
+| GET | `/api/v1/analytics/by-subtype` | Analytics by subtype |
+| GET | `/api/v1/analytics/timeline` | Monthly timeline |
+| POST | `/api/v1/query` | Natural language query (AI) |
 | GET | `/health` | Health check |
-
-Full interactive docs at **http://localhost:8000/docs**
 
 ---
 
-## Sample Queries from the Dataset
+## AI Query Layer
+
+Natural language queries are interpreted by **Groq + Llama 3.3 70B** and routed to existing spatial functions. The LLM never generates raw SQL — it extracts a structured intent JSON that maps to a predefined function in `repository.py`.
 
 ```bash
-# "What intervention is closest to 20.701,-103.321?"
-curl "http://localhost:8000/api/v1/interventions/nearest?lat=20.701&lon=-103.321"
+curl -X POST "https://toroto-api.onrender.com/api/v1/query" \
+  -H "Content-Type: application/json" \
+  -d '{"question": "Which validated interventions are within 5km of 20.7, -103.3?"}'
+```
 
-# "Which interventions happened within 5km of 20.700,-103.320 during March 2026?"
-curl "http://localhost:8000/api/v1/interventions/within-radius?lat=20.700&lon=-103.320&radius_km=5&start_date=2026-03-01&end_date=2026-03-31"
-
-# "How many interventions are inside zone_c?"
-curl "http://localhost:8000/api/v1/interventions/within-area/zone_c"
-
-# "Count reforestacion interventions by region"
-curl "http://localhost:8000/api/v1/subtype-by-region"
+**Intent flow:**
+```
+Natural language → LLM → { query_type, params } → repository.py → PostGIS
 ```
 
 ---
@@ -196,98 +194,30 @@ curl "http://localhost:8000/api/v1/subtype-by-region"
 
 | Decision | Choice | Reason |
 |----------|--------|--------|
-| Database | PostgreSQL + PostGIS | Industry standard for production geospatial systems; GIST indexes, geography type, full OGC function library |
-| Distance calculation | `::geography` cast | Geodesic accuracy on WGS84 ellipsoid; avoids degree-based distortion |
-| Nearest neighbor | `<->` KNN operator | Uses GIST index directly — no full table scan |
-| API framework | FastAPI | Async-ready, automatic OpenAPI docs, Pydantic validation |
-| Metrics storage | JSONB | Flexible schema per intervention subtype without sparse columns |
-| Containerization | Docker Compose | Zero-config local setup; mirrors production patterns |
+| Database | PostgreSQL + PostGIS | Native spatial operators, GIST indexes, geography type |
+| Distance calculation | `::geography` cast | Geodesic accuracy on WGS84 ellipsoid |
+| Nearest neighbor | `<->` KNN operator | GIST index — no full table scan |
+| API framework | FastAPI | Async, automatic OpenAPI docs, Pydantic validation |
+| Metrics storage | JSONB | Flexible schema per intervention subtype |
+| AI layer | LLM → intent → function | Safe (no SQL injection surface), precise, reuses existing endpoints |
+| LLM provider | Groq + Llama 3.3 70B | Free tier, high throughput, OpenAI-compatible API |
+| Containerization | Docker Compose | Zero-config local setup |
+| Deployment | Render | Managed PostgreSQL with PostGIS, simple CI/CD |
 
 ---
 
-## Limitations and Future Improvements
+## Known Limitations
 
-**Current limitations:**
-- Filters in `_build_filters()` use string interpolation — should be fully parameterized
+- `_build_filters()` uses string interpolation in some cases — should be fully parameterized in production
 - No authentication layer
-- No pagination on within-radius results (could return all 130 rows)
-- History/audit log not implemented (would need a `intervention_history` table + triggers)
+- No pagination on large result sets
+- AI layer supports a fixed set of query types; out-of-catalog questions return an error
+- Cold start on Render free tier (~30s after inactivity)
 
-**Scale path:**
-- Add `CLUSTER interventions USING idx_interventions_geom` for physical ordering by location
-- Partition table by `region` or `date` for very large datasets
-- Add read replicas behind a connection pool (PgBouncer) for query scaling
-- Replace Docker Compose with Cloud Run + Cloud SQL for serverless deployment on GCP
+## Scale Path
 
----
-
-## Part 3 – AI Query Layer (Design)
-
-### Architecture
-
-```
-User (natural language)
-        │
-        ▼
-┌───────────────────┐
-│   LLM Layer       │  Claude / GPT-4o
-│  (intent parser)  │  System prompt with schema + spatial function catalog
-└────────┬──────────┘
-         │  structured intent JSON
-         ▼
-┌───────────────────┐
-│  Query Router     │  Maps intent → predefined spatial function
-└────────┬──────────┘
-         │  validated parameters
-         ▼
-┌───────────────────┐
-│  repository.py    │  Existing spatial query layer (no change needed)
-└────────┬──────────┘
-         │
-         ▼
-┌───────────────────┐
-│  PostGIS          │
-└───────────────────┘
-```
-
-### Interpretation Strategy
-
-**Approach: LLM → Structured Intent → Predefined Functions**
-
-Instead of letting the LLM generate raw SQL (risky: SQL injection, hallucinated column names,
-wrong spatial functions), the LLM extracts a structured intent object:
-
-```json
-{
-  "query_type": "within_radius",
-  "lat": 20.700,
-  "lon": -103.320,
-  "radius_km": 5,
-  "filters": { "start_date": "2026-03-01", "end_date": "2026-03-31" }
-}
-```
-
-This intent maps to an existing, tested function in `repository.py`. The LLM never touches SQL.
-
-**System prompt** includes:
-- Table schema (column names, types)
-- List of available query types and their parameters
-- Few-shot examples of NL → intent JSON
-- Hard constraint: respond only with valid JSON, no prose
-
-### Trade-offs
-
-| Dimension | LLM → Intent (chosen) | Raw SQL generation | RAG |
-|-----------|----------------------|--------------------|-----|
-| **Precision** | High (bounded function set) | Medium (hallucination risk) | Low for spatial |
-| **Cost** | Low (small prompt) | Low | High (embedding + retrieval) |
-| **Latency** | ~500ms LLM + <50ms query | ~500ms + query | ~1s+ |
-| **Complexity** | Low | Medium | High |
-| **Safety** | High (no SQL injection surface) | Low | High |
-
-### Future Evolution
-
-- **Provider independence**: abstract the LLM call behind an interface; swap Claude ↔ GPT-4o ↔ local Llama without changing the router
-- **Fallback**: if intent confidence < threshold, route to a clarification prompt rather than executing
-- **Caching**: cache identical NL queries (hash-keyed) to reduce LLM calls
-- **Evaluation**: log (query, intent, result) triples and periodically evaluate intent accuracy
+- `CLUSTER interventions USING idx_interventions_geom` for physical spatial ordering
+- Partition table by `region` or `date` for large datasets
+- PgBouncer connection pool + read replicas for query scaling
+- Migrate to Cloud Run + Cloud SQL for serverless deployment on GCP
+- Abstract LLM call behind an interface for provider swap (Groq ↔ OpenAI ↔ Ollama)
