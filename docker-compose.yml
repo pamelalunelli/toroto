@@ -1,0 +1,46 @@
+services:
+  db:
+    image: postgis/postgis:15-3.3
+    environment:
+      POSTGRES_USER: toroto
+      POSTGRES_PASSWORD: toroto
+      POSTGRES_DB: geospatial
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U toroto -d geospatial"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://toroto:toroto@db:5432/geospatial
+    depends_on:
+      db:
+        condition: service_healthy
+    command: >
+      sh -c "
+      echo 'Waiting for database...' &&
+      sleep 15 &&
+      python scripts/load_data.py &&
+      uvicorn app.main:app --host 0.0.0.0 --port 8000
+      "
+
+  demo:
+    build: .
+    ports:
+      - "8501:8501"
+    depends_on:
+      api:
+        condition: service_started
+    command: >
+      streamlit run app_streamlit.py --server.address=0.0.0.0 --server.port=8501
+
+volumes:
+  pgdata:
