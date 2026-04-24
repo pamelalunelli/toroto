@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from typing import Optional
+from pydantic import BaseModel
 
 from app.database import get_db
 from app import repository as repo
@@ -172,6 +173,30 @@ def status_summary(db: Session = Depends(get_db)):
 def subtype_by_region(db: Session = Depends(get_db)):
     return repo.get_subtype_by_region(db)
 
+
+# ---------------------------------------------------------------------------
+# AI natural language query — Part 3
+# ---------------------------------------------------------------------------
+
+class NLQueryRequest(BaseModel):
+    question: str
+
+
+@router.post("/query", summary="Natural language query (AI-powered)")
+async def nl_query(body: NLQueryRequest, db: Session = Depends(get_db)):
+    """
+    Accepts a natural language question, uses Groq/Llama to extract intent,
+    and routes it to the appropriate spatial query function in repository.py.
+    The LLM never generates raw SQL — only structured intent JSON.
+    """
+    from app.ai_query import interpret_and_execute
+    try:
+        result = await interpret_and_execute(body.question, db)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"AI query failed: {str(e)}")
 
 # ---------------------------------------------------------------------------
 # Internal helper

@@ -28,6 +28,7 @@ st.caption("Interactive dashboard powered by FastAPI + PostGIS")
 query = st.sidebar.selectbox(
     "Choose Query",
     [
+        "AI Query",
         "All Interventions",
         "Nearest Neighbor",
         "Within Radius",
@@ -56,13 +57,21 @@ def make_map(points):
 
     rows = []
     for p in points:
-        coords = p.get("coordinates", {})
-        if not coords:
+        coords = p.get("coordinates")
+
+        if coords and isinstance(coords, dict):
+            lat = coords.get("lat")
+            lon = coords.get("lon")
+        else:
+            lat = p.get("lat")
+            lon = p.get("lon")
+
+        if not lat or not lon:
             continue
 
         rows.append({
-            "lat": coords.get("lat"),
-            "lon": coords.get("lon"),
+            "lat": lat,
+            "lon": lon,
             "id": p.get("id", ""),
             "status": p.get("status", ""),
             "subtype": p.get("subtype", "")
@@ -102,16 +111,13 @@ def make_map(points):
                 map_style=None,
                 initial_view_state=view_state,
                 layers=[layer],
-                tooltip={
-                    "text": "ID: {id}\n{subtype}\n{status}"
-                }
+                tooltip={"text": "ID: {id}\n{subtype}\n{status}"}
             ),
             use_container_width=True
         )
 
     with col2:
         st.dataframe(df)
-
 
 # -------------------------------------------------
 # ALL INTERVENTIONS (AUTO-LOAD)
@@ -259,3 +265,70 @@ elif query == "Timeline":
 
     st.line_chart(df.set_index("month"))
     st.dataframe(df)
+
+# -------------------------------------------------
+# AI QUERY
+# -------------------------------------------------
+
+elif query == "AI Query":
+
+    st.subheader("🤖 AI Natural Language Query")
+    st.caption("Powered by Groq + Llama 3.3 70B — routes to PostGIS via structured intent")
+
+    question = st.text_area(
+        "Ask a question in natural language",
+        placeholder="e.g. Which validated interventions are within 5km of 20.7, -103.3?\nHow many interventions are in zone_a?\nWhat is the closest reforestacion to 20.65, -103.4?",
+        height=100
+    )
+
+    if st.button("Ask"):
+        if not question.strip():
+            st.warning("Please enter a question.")
+        else:
+            with st.spinner("Interpreting and querying..."):
+                try:
+                    r = requests.post(
+                        f"{BASE_URL}/query",
+                        json={"question": question}
+                    )
+                    r.raise_for_status()
+                    data = r.json()
+
+                    query_type = data.get("query_type", "")
+                    intent = data.get("intent", {})
+
+                    st.success(f"Query type detected: `{query_type}`")
+
+                    with st.expander("Intent extracted by LLM"):
+                        st.json(intent)
+
+                    if query_type == "nearest_neighbor":
+                        result = data.get("result")
+                        if result:
+                            st.metric("Closest intervention", result["id"])
+                            st.metric("Distance (m)", round(result["distance_m"], 2))
+                            make_map([result])
+                        else:
+                            st.warning("No result found.")
+
+                    elif query_type in ("within_radius", "within_area"):
+                        results = data.get("results") or data.get("interventions") or []
+                        st.metric("Total found", data.get("total", 0))
+                        if results:
+                            make_map(results)
+
+                    elif query_type == "status_summary":
+                        result = data.get("result", {})
+                        df = pd.DataFrame(list(result.items()), columns=["status", "total"])
+                        st.bar_chart(df.set_index("status"))
+                        st.dataframe(df)
+
+                    elif query_type == "subtype_by_region":
+                        result = data.get("result", [])
+                        df = pd.DataFrame(result)
+                        st.dataframe(df)
+
+                except requests.exceptions.HTTPError as e:
+                    st.error(f"API error: {e.response.json().get('detail', str(e))}")
+                except Exception as e:
+                    st.error(f"Unexpected error: {str(e)}")
