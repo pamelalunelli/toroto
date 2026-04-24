@@ -4,6 +4,7 @@
 # ===========================
 
 import os
+import time
 
 import streamlit as st
 import requests
@@ -44,10 +45,19 @@ query = st.sidebar.selectbox(
 # HELPERS
 # -------------------------------------------------
 
-def api_get(path, params=None):
-    r = requests.get(f"{BASE_URL}{path}", params=params)
-    r.raise_for_status()
-    return r.json()
+def api_get(path, params=None, retries=5):
+    url = f"{BASE_URL}{path}"
+
+    for _ in range(retries):
+        try:
+            r = requests.get(url, params=params, timeout=10)
+            if r.status_code == 200:
+                return r.json()
+        except:
+            pass
+        time.sleep(2)
+
+    raise Exception("API down")
 
 
 def make_map(points):
