@@ -1,28 +1,24 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from app.database import init_db
 from app.routes import router
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    try:
+        init_db()
+    except Exception as e:
+        print("DB init error:", e)
+
+    yield
+    print("Shutting down API")
+
 app = FastAPI(
     title="Toroto Geospatial Interventions API",
-    description="""
-API for storing and querying geospatial interventions.
-
-## Spatial Queries
-
-- **Nearest neighbor** — closest intervention to a point (PostGIS KNN `<->`)
-- **Within radius** — interventions within X km (PostGIS `ST_DWithin` + geography cast)
-- **Within area** — interventions inside a polygon (PostGIS `ST_Within`)
-
-All spatial operations use **SRID 4326 (WGS84)** with **GIST indexes** for performance.
-    """,
+    description="API for geospatial queries with PostGIS",
     version="1.0.0",
+    lifespan=lifespan
 )
-
-
-@app.on_event("startup")
-def on_startup():
-    init_db()
-
 
 app.include_router(router, prefix="/api/v1")
 
