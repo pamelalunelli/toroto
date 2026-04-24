@@ -5,13 +5,9 @@ from app.routes import router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    try:
-        init_db()
-    except Exception as e:
-        print("DB init error:", e)
-
+    print("API starting...")
     yield
-    print("Shutting down API")
+    print("API shutting down")
 
 app = FastAPI(
     title="Toroto Geospatial Interventions API",
