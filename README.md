@@ -2,9 +2,23 @@
 
 REST API for storing and querying geospatial interventions, built with **FastAPI + PostgreSQL/PostGIS**, with an interactive Streamlit dashboard and an AI-powered natural language query layer.
 
-## Live
+> Small personal project. Run it locally with `docker-compose up --build` (it was hosted on Render's free tier and is now offline).
 
-Was hosted on Render free tier; now offline. Run locally with `docker-compose up --build`.
+## Screenshots
+
+**AI Query Layer** — a natural-language question (in Spanish here) is turned into a structured intent by the LLM, then routed to a predefined PostGIS query:
+
+![AI Query Layer](docs/screenshots/ai-query.png)
+
+<table>
+  <tr>
+    <td><b>Nearest neighbor</b><br><img src="docs/screenshots/nearest-neighbor.png" alt="Nearest neighbor"></td>
+    <td><b>Within radius</b><br><img src="docs/screenshots/within-radius.png" alt="Within radius"></td>
+  </tr>
+  <tr>
+    <td colspan="2"><b>Within area (polygon)</b><br><img src="docs/screenshots/within-area.png" alt="Within area"></td>
+  </tr>
+</table>
 
 ---
 
@@ -18,6 +32,7 @@ docker-compose up --build
 - Dashboard: http://localhost:8501
 
 Data loads automatically on startup:
+
 ```
 ✅ Loaded 130 interventions and 3 areas into PostGIS
 ```
@@ -109,7 +124,7 @@ LIMIT 1
 The `<->` KNN operator uses the GIST index directly — O(log n), no full table scan.
 
 ```bash
-curl "https://toroto-api.onrender.com/api/v1/interventions/nearest?lat=20.701&lon=-103.321"
+curl "http://localhost:8000/api/v1/interventions/nearest?lat=20.701&lon=-103.321"
 ```
 
 ---
@@ -126,8 +141,8 @@ ORDER BY distance_m
 `ST_DWithin` with `::geography` computes true geodesic distance. GIST provides a bounding-box pre-filter before the exact check.
 
 ```bash
-curl "https://toroto-api.onrender.com/api/v1/interventions/within-radius?lat=20.700&lon=-103.320&radius_km=5"
-curl "https://toroto-api.onrender.com/api/v1/interventions/within-radius?lat=20.700&lon=-103.320&radius_km=5&start_date=2026-03-01&end_date=2026-03-31"
+curl "http://localhost:8000/api/v1/interventions/within-radius?lat=20.700&lon=-103.320&radius_km=5"
+curl "http://localhost:8000/api/v1/interventions/within-radius?lat=20.700&lon=-103.320&radius_km=5&start_date=2026-03-01&end_date=2026-03-31"
 ```
 
 ---
@@ -144,8 +159,8 @@ WHERE a.area_id = :area_id
 `ST_Within` implements the DE-9IM spatial predicate. GIST indexes on both geometries: bounding-box pre-filter + exact topological test.
 
 ```bash
-curl "https://toroto-api.onrender.com/api/v1/interventions/within-area/zone_a"
-curl "https://toroto-api.onrender.com/api/v1/interventions/within-area/zone_c?status=validated"
+curl "http://localhost:8000/api/v1/interventions/within-area/zone_a"
+curl "http://localhost:8000/api/v1/interventions/within-area/zone_c?status=validated"
 ```
 
 ---
@@ -174,7 +189,7 @@ curl "https://toroto-api.onrender.com/api/v1/interventions/within-area/zone_c?st
 Natural language queries are interpreted by **Groq + Llama 3.3 70B** and routed to existing spatial functions. The LLM never generates raw SQL — it extracts a structured intent JSON that maps to a predefined function in `repository.py`.
 
 ```bash
-curl -X POST "https://toroto-api.onrender.com/api/v1/query" \
+curl -X POST "http://localhost:8000/api/v1/query" \
   -H "Content-Type: application/json" \
   -d '{"question": "Which validated interventions are within 5km of 20.7, -103.3?"}'
 ```
@@ -182,6 +197,15 @@ curl -X POST "https://toroto-api.onrender.com/api/v1/query" \
 **Intent flow:**
 ```
 Natural language → LLM → { query_type, params } → repository.py → PostGIS
+```
+
+Example of the intent extracted for the question in the screenshot above:
+
+```json
+{
+  "query_type": "within_radius",
+  "params": { "lat": 20.7, "lon": -103.32, "radius_km": 5, "status": "validated", "start_date": "2026-03-01" }
+}
 ```
 
 ---
@@ -198,7 +222,7 @@ Natural language → LLM → { query_type, params } → repository.py → PostGI
 | AI layer | LLM → intent → function | Safe (no SQL injection surface), precise, reuses existing endpoints |
 | LLM provider | Groq + Llama 3.3 70B | Free tier, high throughput, OpenAI-compatible API |
 | Containerization | Docker Compose | Zero-config local setup |
-| Deployment | Render | Managed PostgreSQL with PostGIS, simple CI/CD |
+| Deployment | Render (free tier, now offline) | Managed PostgreSQL with PostGIS |
 
 ---
 
@@ -208,7 +232,7 @@ Natural language → LLM → { query_type, params } → repository.py → PostGI
 - No authentication layer
 - No pagination on large result sets
 - AI layer supports a fixed set of query types; out-of-catalog questions return an error
-- Cold start on Render free tier (~30s after inactivity)
+- No RAG, embeddings or agent workflows — the LLM is used only for intent extraction
 
 ## Scale Path
 
