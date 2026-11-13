@@ -4,11 +4,7 @@ REST API for storing and querying geospatial interventions, built with **FastAPI
 
 ## Live
 
-- **API + Swagger docs**: https://toroto-api.onrender.com/docs
-- **Interactive dashboard**: https://toroto-streamlit.onrender.com
-- **Source code**: https://github.com/pamelalunelli/toroto
-
-> The system is deployed on Render free tier and may take ~30 seconds to respond after inactivity.
+Was hosted on Render free tier; now offline. Run locally with `docker-compose up --build`.
 
 ---
 
